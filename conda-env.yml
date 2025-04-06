@@ -1,0 +1,12 @@
+name: /home/byrix/Documents/dev/bom-scrapper/.env
+channels:
+  - defaults
+  - conda-forge
+dependencies:
+  - geopandas
+  - numpy
+  - pandas
+  - pyproj
+  - shapely
+  - typing
+prefix: /home/byrix/Documents/dev/bom-scrapper/.env
