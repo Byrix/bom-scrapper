@@ -2,25 +2,29 @@
 
 import re
 import os
+import tkinter as tk
+import tkinter.font as tkfont
+import tkinter.messagebox as tkmsgbox
 from typing import Dict, Any, List, Tuple
 
 import pyproj
 import shapely
 import requests
+import darkdetect
 import numpy as np
 import pandas as pd
-import geopandas as gpd
-
 from tqdm import tqdm
+import geopandas as gpd
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.common.exceptions import NoSuchElementException 
+from catppuccin import PALETTE as cat_palette
 
 tqdm.pandas()
 
 class Scrapper:
-  def __init__(self, proj: int = 7899):
-    self.crs = pyproj.crs.CRS(proj)
+  def __init__(self, proj: str = '7899'):
+    self.crs = pyproj.CRS(('epsg', proj))
 
   def get(
     self, 
@@ -93,7 +97,7 @@ class Scrapper:
     options = webdriver.ChromeOptions()
     options.binary_location = os.path.join(selenium_path, 'chrome', 'chrome.exe')
     options.add_argument("--unsafely-treat-insecure-origin-as-secure=http://www.bom.gov.au")
-    # options.add_argument('--headless')
+    # options.add_argument('--headless=new')
     # options.add_argument('--no-sandbox')
 
     service = webdriver.ChromeService(executable_path=os.path.join(selenium_path, 'chromedriver', 'chromedriver.exe'))
@@ -168,7 +172,7 @@ class Scrapper:
     extent = gpd.GeoDataFrame(geometry=location_geoms, crs=self.crs)
     return extent
 
-  def run(self, state: str, buffer: int):
+  def run(self, state: str|List[str], buffer: int):
     """
     Executes the full workflow to retrieve weather station data within a state extent.
 
@@ -181,9 +185,150 @@ class Scrapper:
     stations_extent = gpd.sjoin(stations_all, extent, predicate='within')
     rainfall = self.get_data(stations_extent['Site'].values)
 
-    rainfall.to_csv('rainfall.csv', index=False)
-    stations_extent.to_file('stations_extent.geojson', driver='GeoJSON')
+    try:
+      os.makedirs(os.path.join(os.getcwd(), 'output_data'))
+    except FileExistsError:
+      pass 
+
+    rainfall.to_csv(os.path.join('output_data', 'rainfall.csv'), index=False)
+    stations_extent.to_file(os.path.join('output_data', 'stations'))
+
+class GUI:
+  def __init__(self):
+    self.root = tk.Tk()
+
+    # GUI Config 
+    flavour = cat_palette.macchiato if darkdetect.isDark() else cat_palette.latte
+    self.palette = {colour.identifier: colour.hex for colour in flavour.colors}
+
+    font_fam = 'NotoSans NF' if 'NotoSans NF' in tkfont.families() else 'Arial'
+    self.fonts = {
+      'title': tkfont.Font(family=font_fam, size=18, weight='bold'),
+      'head': tkfont.Font(family=font_fam, size=12, weight='bold'),
+      'body': tkfont.Font(family=font_fam, size=12)
+    }
+
+    self.states = {
+      "Australian Capital Territory": "nsw",
+      "New South Wales": "nsw",
+      "Northern Territory" : "nt",
+      "Queensland": "qld",
+      "South Australia": "sa",
+      "Tasmania": "tas", 
+      "Victoria": "vic",
+      "Western Australia": "wa"
+    }
+
+    # GUI init
+    self.root.title("BoM Rainfall Scrapper")
+    self.root.geometry("500x500")
+    self.root.configure(
+      bg=self.palette['base']
+    )
+
+    self._state_select().pack(fill='x', padx=20, pady=10)
+    self._option_row().pack(fill='x', padx=20, pady=10)
+    # self._output_row().pack(fill='x', padx=20, pady=10)
+
+    run_btn = tk.Button(self.root, text="Run", command=self.run, bg=self.palette['mantle'], font=self.fonts['head'], fg=self.palette['text'], activebackground=self.palette['green'], activeforeground=self.palette['base'])
+    run_btn.pack(fill='x', padx=20, pady=10)
+
+    # Start
+    self.root.mainloop()
+
+  def _state_select(self):
+    frame = tk.Frame(self.root, bg=self.palette['base'], bd=0)
+    frame.columnconfigure(0, weight=1)
+    frame.columnconfigure(1, weight=2)
+
+    state_names = tk.StringVar(value=[name for name in self.states.keys()])
+    self.state_list = tk.Listbox(frame, listvariable=state_names, selectmode='multiple', bg=self.palette['mantle'], fg=self.palette['text'], highlightcolor=self.palette['blue'], width=30, bd=0, font=self.fonts['body'])
+    self.state_list.grid(row=0, column=1)
+
+    info_frame = tk.Frame(frame, bg=self.palette['base'], bd=0)
+    info_frame.columnconfigure(0, weight=1)
+    tk.Label(info_frame, text='Select states', font=self.fonts['head'], bg=self.palette['base'], fg=self.palette['text']).grid(row=0, column=0, sticky='w')
+    tk.Label(info_frame, text='Can select multiple states', font=self.fonts['body'], bg=self.palette['base'], fg=self.palette['text']).grid(row=1, column=0, sticky='w')
+    info_frame.grid(row=0, column=0, sticky='wn')
+
+    return frame
+
+  def _option_row(self): 
+    frame = tk.Frame(self.root, bg=self.palette['base'], bd=0)
+    frame.columnconfigure(0, weight=1, uniform='optRow')
+    frame.columnconfigure(1, weight=1, uniform='optRow')
+
+    buff_frame = tk.Frame(frame, bg=self.palette['base'], bd=0)
+    self.buffer_distance = tk.DoubleVar(value=0)
+
+    tk.Label(buff_frame, text='Buffer', font=self.fonts['head'], bg=self.palette['base'], fg=self.palette['text'], justify='left', wraplength=250).grid(row=0, column=0, sticky='w')
+    tk.Label(buff_frame, text='The buffer distance (in km) to place around each state', font=self.fonts['body'], bg=self.palette['base'], fg=self.palette['text'], justify='left', wraplength=200).grid(row=1, column=0, sticky='w')
+    tk.Scale(buff_frame, from_=0, to=500, variable=self.buffer_distance, orient='horizontal', bg=self.palette['base'], fg=self.palette['text'], showvalue=True, troughcolor=self.palette['mantle'], font=self.fonts['body'], borderwidth=0, highlightthickness=0, resolution=25, length=200).grid(row=2, column=0, sticky='w')
+
+    buff_frame.grid(row=0, column=0, sticky='w')
+
+    proj_frame = tk.Frame(frame, bg=self.palette['base'], bd=0)
+    self.projection = tk.StringVar(value='3857')
+    tk.Label(proj_frame, text='Projection', font=self.fonts['head'], bg=self.palette['base'], fg=self.palette['text'], justify='left', wraplength=250).grid(row=0, column=0, sticky='w')
+    tk.Label(proj_frame, text='The EPSG code of the desired projection, default is WGS84 / Pseudo-Mercator', font=self.fonts['body'], bg=self.palette['base'], fg=self.palette['text'], justify='left', wraplength=250).grid(row=1, column=0, sticky='w')
+    tk.Entry(proj_frame, text=self.projection, textvariable=self.projection, bg=self.palette['mantle'], fg=self.palette['text'], font=self.fonts['body'], bd=0).grid(row=2, column=0, sticky='w')
+    proj_frame.grid(row=0, column=1)
+
+    return frame
+  
+  def _output_row(self): 
+    frame = tk.Frame(self.root, bg=self.palette['base'], bd=0)
+    frame.columnconfigure(0, weight=1, uniform='optRow')
+    frame.columnconfigure(1, weight=1, uniform='optRow')
+
+    buff_frame = tk.Frame(frame, bg=self.palette['base'], bd=0)
+    self.buffer_distance = tk.DoubleVar(value=0)
+
+    tk.Label(buff_frame, text='Buffer', font=self.fonts['head'], bg=self.palette['base'], fg=self.palette['text'], justify='left', wraplength=250).grid(row=0, column=0, sticky='w')
+    tk.Label(buff_frame, text='The buffer distance (in km) to place around each state', font=self.fonts['body'], bg=self.palette['base'], fg=self.palette['text'], justify='left', wraplength=200).grid(row=1, column=0, sticky='w')
+    tk.Scale(buff_frame, from_=0, to=500, variable=self.buffer_distance, orient='horizontal', bg=self.palette['base'], fg=self.palette['text'], showvalue=True, troughcolor=self.palette['mantle'], font=self.fonts['body'], borderwidth=0, highlightthickness=0, resolution=25, length=200).grid(row=2, column=0, sticky='w')
+
+    buff_frame.grid(row=0, column=0, sticky='w')
+
+    proj_frame = tk.Frame(frame, bg=self.palette['base'], bd=0)
+    self.projection = tk.StringVar(value='3857')
+    tk.Label(proj_frame, text='Projection', font=self.fonts['head'], bg=self.palette['base'], fg=self.palette['text'], justify='left', wraplength=250).grid(row=0, column=0, sticky='w')
+    tk.Label(proj_frame, text='The EPSG code of the desired projection, default is WGS84 / Pseudo-Mercator', font=self.fonts['body'], bg=self.palette['base'], fg=self.palette['text'], justify='left', wraplength=250).grid(row=1, column=0, sticky='w')
+    tk.Entry(proj_frame, text=self.projection, textvariable=self.projection, bg=self.palette['mantle'], fg=self.palette['text'], font=self.fonts['body'], bd=0).grid(row=2, column=0, sticky='w')
+    proj_frame.grid(row=0, column=1)
+
+    return frame
+
+  def popup_done(self):
+    win = tk.Toplevel()
+    win.wm_title("Complete!")
+    win.configure(bg=self.palette['base'])
+
+    frame = tk.Frame(win, bg=self.palette['base'], bd=0)
+    tk.Label(frame, text="Process successfully complete! Files can be found at: ", bg=self.palette['base'], fg=self.palette['text'], font=self.fonts['body']).grid(row=0, column=0, sticky='w')
+    tk.Label(frame, text=os.path.join(os.getcwd(), 'output_data'), bg=self.palette['base'], fg=self.palette['text'], font=self.fonts['body']).grid(row=1, column=0, sticky='w')
+    tk.Button(frame, text="Okay", command=self.root.destroy, bg=self.palette['mantle'], font=self.fonts['head'], fg=self.palette['text'], activebackground=self.palette['red'], activeforeground=self.palette['base']).grid(row=2, column=0, sticky='e')
+    frame.pack(padx=10, pady=10, fill='both')
+
+  def run(self):
+    states_used = [self.states[self.state_list.get(i)] for i in self.state_list.curselection()]
+    if len(states_used)==0:
+      tkmsgbox.showinfo("ERROR", "At least one state must be selected")
+      return 
+    
+    buffer = int(self.buffer_distance.get())
+
+    try:
+      proj_code = self.projection.get()
+      if proj_code == '':
+        proj_code = '3857'
+      scrapper = Scrapper(proj_code)
+    except pyproj.exceptions.CRSError:
+      tkmsgbox.showinfo("ERROR", f"Unrecognised projection: EPSG:{proj_code}")
+      return 
+    
+    scrapper.run(states_used, buffer)
+    self.popup_done()
 
 if __name__=='__main__':
-  scraper = Scrapper()
-  scraper.run('tas', 0)
+  gui = GUI()
