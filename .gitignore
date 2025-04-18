@@ -11,3 +11,6 @@ selenium/chrome/*
 selenium/chromedriver/*
 *.csv
 output_data
+build
+dist
+*.zip
