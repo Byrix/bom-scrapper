@@ -2,3 +2,11 @@ data/*
 .env
 .env/*
 ignore
+.vscode
+__pycache__
+.pytest_cache
+*.geojson
+*.ipynb
+selenium/chrome/*
+selenium/chromedriver/*
+*.csv
