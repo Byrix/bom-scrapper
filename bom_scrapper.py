@@ -5,10 +5,10 @@ import os
 import tkinter as tk
 import tkinter.font as tkfont
 import tkinter.messagebox as tkmsgbox
+import tkinter.filedialog as fd
 from typing import Dict, Any, List, Tuple
 
 import pyproj
-import shapely
 import requests
 import darkdetect
 import numpy as np
@@ -54,11 +54,12 @@ class Scrapper:
         return None
     return r
 
-  def get_stations(self) -> gpd.GeoDataFrame:
+  def get_stations(self, states: str|List[str], state_codes: bool) -> gpd.GeoDataFrame:
     """Returns a geodataframe containing all BoM weather stations"""
     url = "https://reg.bom.gov.au/climate/data/lists_by_element/stations.txt"
-    r = self.get(url)
-    assert r is not None
+    r = requests.get(url, timeout=10.0)
+    if r.status_code != 200:
+      r.raise_for_status()
 
     r_lines = r.text.splitlines()
     station_list = []
@@ -84,7 +85,67 @@ class Scrapper:
       crs='epsg:4326'
     )
     stations = stations.to_crs(crs=self.crs)
-    return stations
+
+    if state_codes:
+      districts = {"nsw": (46, 75), "nt": (14, 15), "qld": (27, 45), "sa": (16, 26), "tas": (91, 99), "vic": (76, 90), "wa": (1, 13)}
+
+      dist_codes = []
+      for code in stations['Dist'].values:
+        try: 
+          if np.isnan(code):
+            dist_codes.append(np.nan)
+            continue
+        except:
+          pass
+
+        try: 
+          code = int(code)
+        except ValueError:
+          # print(code)
+          code = int(re.sub('[a-zA-Z]', '', code))
+        except TypeError:
+          code = np.nan 
+
+        dist_codes.append(code)
+      dist_codes = np.asarray(dist_codes)
+
+      state_stations_all = []
+
+      if isinstance(states, str):
+        states = np.array([states])
+      for state in states:
+        dist_bound = districts[state]
+        ste_stn_less = np.where(dist_codes <= dist_bound[1], True, False)
+        ste_stn_mask = np.where(dist_codes >= dist_bound[0], ste_stn_less, False)
+        # ste_stn_mask = np.where(dist_codes > dist_bound[0], np.where(dist_codes < dist_bound[1], True, False), False)
+        state_stations_all.append(stations.loc[ste_stn_mask])
+
+      try: 
+        filter_stns = pd.concat(state_stations_all)
+      except ValueError as exc:
+        raise ValueError("No stations were found") from exc
+      filter_stns = gpd.GeoDataFrame(filter_stns, crs=self.crs)
+    else:
+      stn_ids = pd.read_csv(states)
+      head_opts = ['site', 'id', 'code']
+      col_names = stn_ids.columns
+     
+      for name in col_names:
+        if name.lower() in head_opts:
+          ids = stn_ids[name].values
+
+      try:
+        print(ids.dtype)
+        print(stations['Site'].dtype)
+        stations['Site'] = stations['Site'].astype(np.int64)
+        filter_stns = stations[stations['Site'].isin(ids)]
+      except NameError as exc:
+        raise KeyError(f"Could not find an ID column in provided file: {states}") from exc
+      
+      if filter_stns.shape[0] == 0:
+        raise ValueError("No stations were found")
+
+    return filter_stns
 
   def get_data(self, stations:List[str]) -> pd.DataFrame:
     """
@@ -137,42 +198,7 @@ class Scrapper:
     driver.quit()
     return pd.DataFrame(rainfall_data)
 
-  def get_extent(self, locations: str|List[str], buffer: int = 0) -> gpd.GeoDataFrame:
-    """
-    Retrieves the geographic extent of the specified locations and applies a buffer.
-    
-    :param locations: A single location or a list of locations (state abbreviations).
-    :param buffer: The buffer distance to apply to the extent geometry.
-    :return: A GeoDataFrame containing the extent geometry.
-    """
-    ids = {"act": 8, "nsw": 1, "nt": 7, "qld": 3, "sa": 4, "tas": 6, "vic": 2, "wa": 5}
-    opts = {"_profile": "oai", "_mediatype": "application/geo+json"}
-    proj = pyproj.Transformer.from_crs(4326, self.crs, always_xy=True)
-
-    locations = [locations] if isinstance(locations, str) else locations
-    location_geoms: List[shapely.Polygon] | shapely.GeometryCollection = []
-    for loc in locations:
-      url = f"https://asgs.linked.fsdf.org.au/dataset/asgsed3/collections/STE/items/{ids[loc]}"
-      r = self.get(url, opts)
-      if r is None:
-        continue
-
-      geom = shapely.from_geojson(r.content)
-      geom_convert_list = []
-      for poly in geom.geoms:
-        trans_coords = [proj.transform(x, y) for x,y in poly.exterior.coords]
-        geom_convert_list.append(shapely.Polygon(trans_coords))
-
-      geom_trans = shapely.MultiPolygon(geom_convert_list)
-      geom_trans = shapely.buffer(geom_trans, buffer)
-
-      location_geoms.append(geom_trans)
-
-    # extent = shapely.GeometryCollection(location_geoms)
-    extent = gpd.GeoDataFrame(geometry=location_geoms, crs=self.crs)
-    return extent
-
-  def run(self, state: str|List[str], buffer: int):
+  def run(self, state: str|List[str], codes: bool, save_path: str|None):
     """
     Executes the full workflow to retrieve weather station data within a state extent.
 
@@ -180,22 +206,28 @@ class Scrapper:
     :param buffer: The buffer distance to apply to the state extent.
     :return: A GeoDataFrame containing weather station data.
     """
-    extent = self.get_extent(state, buffer) 
-    stations_all = self.get_stations()
-    stations_extent = gpd.sjoin(stations_all, extent, predicate='within')
-    rainfall = self.get_data(stations_extent['Site'].values)
+    stations = self.get_stations(state, codes)
+    rainfall = self.get_data(stations['Site'].values)
 
-    try:
-      os.makedirs(os.path.join(os.getcwd(), 'output_data'))
-    except FileExistsError:
-      pass 
+    if save_path is None:
+      try:
+        os.makedirs(os.path.join(os.getcwd(), 'output_data'))
+      except FileExistsError:
+        pass
+      save_path = os.path.join(os.getcwd(), 'output_data')
 
-    rainfall.to_csv(os.path.join('output_data', 'rainfall.csv'), index=False)
-    stations_extent.to_file(os.path.join('output_data', 'stations'))
+    rainfall.to_csv(os.path.join(save_path, 'rainfall.csv'), index=False)
+    stations.to_file(os.path.join(save_path, 'stations'))
 
 class GUI:
   def __init__(self):
     self.root = tk.Tk()
+
+    self.ids_file = None
+    self.ids_file_disp = tk.StringVar()
+    self.save_path = None
+    self.save_path_disp = tk.StringVar()
+    self.save_path_disp.set("Select...")
 
     # GUI Config 
     flavour = cat_palette.macchiato if darkdetect.isDark() else cat_palette.latte
@@ -205,7 +237,8 @@ class GUI:
     self.fonts = {
       'title': tkfont.Font(family=font_fam, size=18, weight='bold'),
       'head': tkfont.Font(family=font_fam, size=12, weight='bold'),
-      'body': tkfont.Font(family=font_fam, size=12)
+      'body': tkfont.Font(family=font_fam, size=12),
+      'sub': tkfont.Font(family=font_fam, size=10)
     }
 
     self.states = {
@@ -221,7 +254,7 @@ class GUI:
 
     # GUI init
     self.root.title("BoM Rainfall Scrapper")
-    self.root.geometry("500x500")
+    self.root.geometry("600x600")
     self.root.configure(
       bg=self.palette['base']
     )
@@ -249,6 +282,10 @@ class GUI:
     info_frame.columnconfigure(0, weight=1)
     tk.Label(info_frame, text='Select states', font=self.fonts['head'], bg=self.palette['base'], fg=self.palette['text']).grid(row=0, column=0, sticky='w')
     tk.Label(info_frame, text='Can select multiple states', font=self.fonts['body'], bg=self.palette['base'], fg=self.palette['text']).grid(row=1, column=0, sticky='w')
+    tk.Label(info_frame, text='Alternatively, click below to upload a file containing station ID numbers', justify='left', wraplength=200, font=self.fonts['body'], bg=self.palette['base'], fg=self.palette['text']).grid(row=2, column=0, sticky='w')
+    tk.Button(info_frame, text='Upload', command=self._load, bg=self.palette['mantle'], font=self.fonts['body'], fg=self.palette['text'], activebackground=self.palette['blue'], activeforeground=self.palette['base']).grid(row=3, column=0, sticky='w')
+    tk.Label(info_frame, text="Assumes file has one of the following column headers: 'site', 'id', 'code'", justify='left', wraplength=200, font=self.fonts['sub'], bg=self.palette['base'], fg=self.palette['text']).grid(row=4, column=0, sticky='w')
+    tk.Label(info_frame, textvariable=self.ids_file_disp, font=self.fonts['sub'], bg=self.palette['base'], fg=self.palette['text']).grid(row=5, column=0, sticky='w')
     info_frame.grid(row=0, column=0, sticky='wn')
 
     return frame
@@ -258,14 +295,21 @@ class GUI:
     frame.columnconfigure(0, weight=1, uniform='optRow')
     frame.columnconfigure(1, weight=1, uniform='optRow')
 
-    buff_frame = tk.Frame(frame, bg=self.palette['base'], bd=0)
-    self.buffer_distance = tk.DoubleVar(value=0)
+    # buff_frame = tk.Frame(frame, bg=self.palette['base'], bd=0)
+    # self.buffer_distance = tk.DoubleVar(value=0)
 
-    tk.Label(buff_frame, text='Buffer', font=self.fonts['head'], bg=self.palette['base'], fg=self.palette['text'], justify='left', wraplength=250).grid(row=0, column=0, sticky='w')
-    tk.Label(buff_frame, text='The buffer distance (in km) to place around each state', font=self.fonts['body'], bg=self.palette['base'], fg=self.palette['text'], justify='left', wraplength=200).grid(row=1, column=0, sticky='w')
-    tk.Scale(buff_frame, from_=0, to=500, variable=self.buffer_distance, orient='horizontal', bg=self.palette['base'], fg=self.palette['text'], showvalue=True, troughcolor=self.palette['mantle'], font=self.fonts['body'], borderwidth=0, highlightthickness=0, resolution=25, length=200).grid(row=2, column=0, sticky='w')
+    # tk.Label(buff_frame, text='Buffer', font=self.fonts['head'], bg=self.palette['base'], fg=self.palette['text'], justify='left', wraplength=250).grid(row=0, column=0, sticky='w')
+    # tk.Label(buff_frame, text='The buffer distance (in km) to place around each state', font=self.fonts['body'], bg=self.palette['base'], fg=self.palette['text'], justify='left', wraplength=200).grid(row=1, column=0, sticky='w')
+    # tk.Scale(buff_frame, from_=0, to=500, variable=self.buffer_distance, orient='horizontal', bg=self.palette['base'], fg=self.palette['text'], showvalue=True, troughcolor=self.palette['mantle'], font=self.fonts['body'], borderwidth=0, highlightthickness=0, resolution=25, length=200).grid(row=2, column=0, sticky='w')
 
-    buff_frame.grid(row=0, column=0, sticky='w')
+    # buff_frame.grid(row=0, column=0, sticky='w')
+
+    otpt_frame = tk.Frame(frame, bg=self.palette['base'], bd=0)
+
+    tk.Label(otpt_frame, text='Output', font=self.fonts['head'], bg=self.palette['base'], fg=self.palette['text'], justify='left', wraplength=250).grid(row=0, column=0, sticky='w')
+    tk.Label(otpt_frame, text='Please select where to save the output', font=self.fonts['body'], bg=self.palette['base'], fg=self.palette['text'], justify='left', wraplength=200).grid(row=1, column=0, sticky='w')
+    tk.Button(otpt_frame, textvariable=self.save_path_disp, command=self._save, bg=self.palette['mantle'], font=self.fonts['body'], fg=self.palette['text'], activebackground=self.palette['blue'], activeforeground=self.palette['base']).grid(row=2, column=0, sticky='w')
+    otpt_frame.grid(row=0, column=0, sticky='w')
 
     proj_frame = tk.Frame(frame, bg=self.palette['base'], bd=0)
     self.projection = tk.StringVar(value='3857')
@@ -310,13 +354,50 @@ class GUI:
     tk.Button(frame, text="Okay", command=self.root.destroy, bg=self.palette['mantle'], font=self.fonts['head'], fg=self.palette['text'], activebackground=self.palette['red'], activeforeground=self.palette['base']).grid(row=2, column=0, sticky='e')
     frame.pack(padx=10, pady=10, fill='both')
 
+  def _load(self):
+    allowed_files = [
+      ('Text CSV', '*.csv'),
+      ('Excel 97-2003', '*.xls'),
+      ('Excel 2007-365', '*xlsx'),
+      ('All files', '*.*')
+    ]
+
+    self.ids_file = fd.askopenfilename(
+      title='Select file with stations IDs...',
+      initialdir=os.getcwd(),
+      filetypes=allowed_files
+    )
+
+    path = self.ids_file.split('\\')
+    try:
+      self.ids_file_disp.set(f".../{path[-2]}/{path[-1]}")
+    except IndexError:
+      path = self.ids_file.split('/')
+      self.ids_file_disp.set(f".../{path[-2]}/{path[-1]}")
+
+  def _save(self):
+    self.save_path = fd.askdirectory(
+      title='Select a folder to save to...',
+      initialdir=os.getcwd(),
+      mustexist=False
+    )
+
+    path = self.save_path.split('\\')
+    try:
+      self.save_path_disp.set(f".../{path[-2]}/{path[-1]}")
+    except IndexError:
+      path = self.save_path.split('/')
+      self.save_path_disp.set(f".../{path[-2]}/{path[-1]}")
+
   def run(self):
-    states_used = [self.states[self.state_list.get(i)] for i in self.state_list.curselection()]
-    if len(states_used)==0:
-      tkmsgbox.showinfo("ERROR", "At least one state must be selected")
-      return 
-    
-    buffer = int(self.buffer_distance.get())
+    state_codes = self.ids_file is None
+    if state_codes:
+      location_info = [self.states[self.state_list.get(i)] for i in self.state_list.curselection()]
+      if len(location_info)==0:
+        tkmsgbox.showinfo("ERROR", "At least one state must be selected or an IDs file must be uploaded")
+        return 
+    else:
+      location_info = self.ids_file
 
     try:
       proj_code = self.projection.get()
@@ -327,8 +408,13 @@ class GUI:
       tkmsgbox.showinfo("ERROR", f"Unrecognised projection: EPSG:{proj_code}")
       return 
     
-    scrapper.run(states_used, buffer)
+    try:
+      scrapper.run(location_info, state_codes, self.save_path)
+    except PermissionError:
+      tkmsgbox.showinfo("ERROR", f"Unable to save to files\nEnsure any existing files of the same name are renamed or removed from the directory before running.")
+      return 
+      
     self.popup_done()
 
 if __name__=='__main__':
-  gui = GUI()
+  GUI()
