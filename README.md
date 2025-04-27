@@ -4,9 +4,7 @@ Python script that scrapes weather and climate data from the [Australian Bureau 
 While an effort has been made to make this platform independent, it has been designed and tested on Windows exclusively. 
 
 ## Requirements 
-All Python environment requirements are listed in the `conda-env.yml` file for Conda use, a `requirements.txt` file is also included for Pip. 
+All Python environment requirements are listed in the `conda-env.yml` file for Conda use, a `requirements.txt` file is also included for venv
 
-The script requires the use of [Selenium WebDriver](https://www.selenium.dev/documentation/webdriver/), specifically the Chrome WebDriver. The script will look for the Chrome executable and the webdriver within the respective subdirectories in the `selenium` folder. 
-
-## Note 
-Testing files incomplete
+## Usage
+On Windows, clone the repo and run the `run.bat` file, a venv with the neccersary dependencies will automatically be created and the script run. 
