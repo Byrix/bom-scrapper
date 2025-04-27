@@ -7,9 +7,10 @@ __pycache__
 .pytest_cache
 *.geojson
 *.ipynb
-selenium/chrome/*
-selenium/chromedriver/*
 output_data
 build
 dist
 *.zip
+selenium
+docs
+tmp

@@ -107,8 +107,6 @@ class Scrapper:
           ids = stn_ids[name].values
 
       try:
-        print(ids.dtype)
-        print(stations['Site'].dtype)
         stations['Site'] = stations['Site'].astype(np.int64)
         filter_stns = stations[stations['Site'].isin(ids)]
       except NameError as exc:
@@ -125,16 +123,18 @@ class Scrapper:
     :param station: the station id for the desired station 
     :return: a `pandas.DataFrame` with the data for the station, or None
     """
-    selenium_path = os.path.join(os.getcwd(), 'selenium')
+    # selenium_path = os.path.join(os.getcwd(), 'selenium')
 
     options = webdriver.ChromeOptions()
-    options.binary_location = os.path.join(selenium_path, 'chrome', 'chrome.exe')
+    # options.binary_location = os.path.join(selenium_path, 'chrome', 'chrome.exe')
     options.add_argument("--unsafely-treat-insecure-origin-as-secure=http://www.bom.gov.au")
     # options.add_argument('--headless=new')
     # options.add_argument('--no-sandbox')
 
-    service = webdriver.ChromeService(executable_path=os.path.join(selenium_path, 'chromedriver', 'chromedriver.exe'))
-    driver = webdriver.Chrome(service=service, options=options)
+    # service = webdriver.ChromeService(executable_path=os.path.join(selenium_path, 'chromedriver', 'chromedriver.exe'))
+    # driver = webdriver.Chrome(service=service, options=options)
+
+    driver = webdriver.Chrome(options=options)
 
     rainfall_data = np.empty((0,3))
     stations_used = np.full(len(stations), True, dtype=bool)
