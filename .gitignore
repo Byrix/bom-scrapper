@@ -9,7 +9,6 @@ __pycache__
 *.ipynb
 selenium/chrome/*
 selenium/chromedriver/*
-*.csv
 output_data
 build
 dist

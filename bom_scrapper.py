@@ -87,41 +87,13 @@ class Scrapper:
     stations = stations.to_crs(crs=self.crs)
 
     if state_codes:
-      districts = {"nsw": (46, 75), "nt": (14, 15), "qld": (27, 45), "sa": (16, 26), "tas": (91, 99), "vic": (76, 90), "wa": (1, 13)}
-
-      dist_codes = []
-      for code in stations['Dist'].values:
-        try: 
-          if np.isnan(code):
-            dist_codes.append(np.nan)
-            continue
-        except:
-          pass
-
-        try: 
-          code = int(code)
-        except ValueError:
-          # print(code)
-          code = int(re.sub('[a-zA-Z]', '', code))
-        except TypeError:
-          code = np.nan 
-
-        dist_codes.append(code)
-      dist_codes = np.asarray(dist_codes)
-
-      state_stations_all = []
-
+      station_ste = np.asarray(stations['STA'].values, str)
       if isinstance(states, str):
-        states = np.array([states])
-      for state in states:
-        dist_bound = districts[state]
-        ste_stn_less = np.where(dist_codes <= dist_bound[1], True, False)
-        ste_stn_mask = np.where(dist_codes >= dist_bound[0], ste_stn_less, False)
-        # ste_stn_mask = np.where(dist_codes > dist_bound[0], np.where(dist_codes < dist_bound[1], True, False), False)
-        state_stations_all.append(stations.loc[ste_stn_mask])
-
+        states = [states]
+      
+      stn_ste_mask = [state.lower() in states for state in station_ste]
       try: 
-        filter_stns = pd.concat(state_stations_all)
+        filter_stns = stations.loc[stn_ste_mask]
       except ValueError as exc:
         raise ValueError("No stations were found") from exc
       filter_stns = gpd.GeoDataFrame(filter_stns, crs=self.crs)
@@ -206,9 +178,6 @@ class Scrapper:
     :param buffer: The buffer distance to apply to the state extent.
     :return: A GeoDataFrame containing weather station data.
     """
-    stations = self.get_stations(state, codes)
-    rainfall = self.get_data(stations['Site'].values)
-
     if save_path is None:
       try:
         os.makedirs(os.path.join(os.getcwd(), 'output_data'))
@@ -216,8 +185,18 @@ class Scrapper:
         pass
       save_path = os.path.join(os.getcwd(), 'output_data')
 
-    rainfall.to_csv(os.path.join(save_path, 'rainfall.csv'), index=False)
-    stations.to_file(os.path.join(save_path, 'stations'))
+    rain_path = os.path.join(save_path, 'rainfall.csv')
+    stn_path = os.path.join(save_path, 'stations')
+
+    if os.path.exists(rain_path) or os.path.exists(os.path.join(stn_path, 'stations.shp')):
+      raise NameError()
+    
+    stations = self.get_stations(state, codes)
+    stations.to_file(stn_path, engine='pyogrio')
+    
+    rainfall = self.get_data(stations['Site'].values)
+    rainfall.to_csv(rain_path, index=False)
+    
 
 class GUI:
   def __init__(self):
@@ -412,6 +391,9 @@ class GUI:
       scrapper.run(location_info, state_codes, self.save_path)
     except PermissionError:
       tkmsgbox.showinfo("ERROR", f"Unable to save to files\nEnsure any existing files of the same name are renamed or removed from the directory before running.")
+      return 
+    except NameError:
+      tkmsgbox.showinfo("ERROR", f"Output files already exist in the output directory\nEnsure any existing files of the same name are renamed or removed from the directory before running.")
       return 
       
     self.popup_done()
