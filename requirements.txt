@@ -1,0 +1,9 @@
+geopandas
+tqdm
+selenium
+requests
+pandas
+numpy
+pyproj
+darkdetect
+catppuccin
